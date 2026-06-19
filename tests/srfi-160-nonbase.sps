@@ -3,10 +3,13 @@
 ;;; SPDX-License-Identifier: MIT
 #!r6rs
 
-(import (only (chezscheme) include)
+(import (only (chezscheme) include format random)
         (rename (rnrs (6)) (exact? r6rs:exact?) (inexact? r6rs:inexact?))
-        (only (srfi :1 lists) list= take drop count take-while drop-while list-index)
-        (rename (srfi :1 lists) (remove remove/?))
+        (only (rnrs r5rs (6)) exact->inexact)
+        (only (rename (srfi :1 lists)
+                      (remove remove/?))
+              list= take drop count take-while drop-while list-index split-at iota
+              remove/?)
         (srfi :64 testing)
         (only (srfi :152 strings) string-segment)
         (only (srfi :158 generators-and-accumulators) circular-generator gfilter gmap)
@@ -24,21 +27,21 @@
 	(srfi :160 s8) (srfi :160 s16) (srfi :160 s32) (srfi :160 s64)
 	(srfi :160 f32) (srfi :160 f64)
         (srfi :160 c64) (srfi :160 c128)
-        (except (srfi :160 meta utils) exact? inexact?)
+        (srfi :160 meta utils)
         (srfi :160 meta curried)
         (srfi :160 test aux))
 
-(include "test/srfi-160-base-properties.scm")
+(include "srfi-160-base-properties.scm")
 
-(include "test/srfi-160-mutators-properties.scm")
-(include "test/srfi-160-constructors-properties.scm")
-(include "test/srfi-160-iteration-properties.scm")
-(include "test/srfi-160-searching-properties.scm")
+(include "srfi-160-mutators-properties.scm")
+(include "srfi-160-constructors-properties.scm")
+(include "srfi-160-iteration-properties.scm")
+(include "srfi-160-searching-properties.scm")
 
-(include "test/srfi-160-mutators-tests.scm")
-(include "test/srfi-160-constructors-tests.scm")
-(include "test/srfi-160-iteration-tests.scm")
-(include "test/srfi-160-searching-tests.scm")
+(include "srfi-160-mutators-tests.scm")
+(include "srfi-160-constructors-tests.scm")
+(include "srfi-160-iteration-tests.scm")
+(include "srfi-160-searching-tests.scm")
 
 (run-s8vector-mutators-tests)
 (run-s16vector-mutators-tests)
