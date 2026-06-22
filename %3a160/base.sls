@@ -71,8 +71,8 @@
           (only (rnrs r5rs (6)) exact->inexact inexact->exact)
           (only (srfi :160 meta utils)
                 format-vector-type
-                nonnegative-fixnum? exact-integer? inexact?)
-          (only (srfi :160 meta curried) raised-with?))
+                nonnegative-fixnum? exact-integer? inexact?
+                raised-with?))
 
   (define (u8? n)  (and (exact-integer? n) (<= 0 n 255)))
   (define (s8? n)  (and (exact-integer? n) (<= -128 n 127)))
