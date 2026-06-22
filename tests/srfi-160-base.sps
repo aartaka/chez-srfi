@@ -1,4 +1,4 @@
-;; SPDX-FileCopyrightText: 2018 D. Guthrie <dguthrie@posteo.net>
+;; SPDX-FileCopyrightText: 2026 D. Guthrie <dguthrie@posteo.net>
 ;;;
 ;;; SPDX-License-Identifier: MIT
 #!r6rs
@@ -26,25 +26,97 @@
               make-random-real-generator
               make-random-rectangular-generator)
         (only (srfi :235 combinators) flip)
-        (only (srfi :252 property-testing) list-generator-of symbol-generator)
+        (only (rename (srfi :252 property-testing)
+                      (test-property test-property/unnamed)
+                      (test-property-expect-fail test-property-expect-fail/unnamed))
+              list-generator-of
+              symbol-generator
+              test-property/unnamed
+              test-property-expect-fail/unnamed)
         (srfi :160 base)
-        (srfi :160 meta curried)
-        (srfi :160 meta utils)
-        (srfi :160 test aux))
+        (srfi :160 meta utils))
 
-(include "srfi-160-base-properties.scm")
-;;
+(define-syntax (raises    stx) (syntax-violation #f "invalid use of auxilliary syntax" stx))
+(define-syntax (irritants stx) (syntax-violation #f "invalid use of auxilliary syntax" stx))
+(define-syntax (message   stx) (syntax-violation #f "invalid use of auxilliary syntax" stx))
+
+(define-syntax (define-test-property stx)
+  (syntax-case stx (raises irritants message)
+    [(_ (bind-to . args)
+	body ... body*
+        (raises who)
+	(irritants irr ...)
+	(message msg))
+     #'(define (bind-to . args)
+         (guard (ex [(and (assertion-violation? ex)
+			  (who-condition? ex)
+			  (irritants-condition? ex)
+			  (message-condition? ex)
+			  (eq? (condition-who ex) (quote who))
+			  msg)
+		     (and (string=? (condition-message ex) msg)
+			  (equal? (condition-irritants ex) (list irr ...)))]
+		    [(and (assertion-violation? ex)
+			  (who-condition? ex)
+			  (irritants-condition? ex)
+			  (eq? (condition-who ex) (quote who)))
+		     (equal? (condition-irritants ex) (list irr ...))])
+                body ... body*
+                #f))]))
+
+(define-syntax (define-test-property/curried stx)
+  (syntax-case stx (raises irritants message)
+    [(_ ((generator argU argU* ...) . argsL)
+        body ... body*
+        (irritants irr ...)
+        (message msg))
+     #'(define-syntax (generator stx)
+         (syntax-case stx ()
+           [(_ bind-to argU argU* ...)
+            #'(define-test-property (bind-to . argsL)
+                body ... body*
+                (raises argU)
+                (irritants irr ...)
+                (message msg))]))]))
+
+(define-syntax (test-property stx)
+  (syntax-case stx ()
+    [(_ name property gen-list)
+     #'(test-property name property gen-list 100)]
+    [(_ name property gen-list runs)
+     #'(begin
+	 (test-property/unnamed property gen-list runs)
+	 (let* ([resp (test-result-alist (test-runner-current))]
+		[kind (assq 'result-kind resp)])
+	   (when (and (pair? kind) (eq? (cdr kind) 'fail))
+	     (display (format "PROPERTY FAIL ~a: ~a\n" name (quote property))
+		      (current-output-port)))))]))
+
+(define-syntax (test-property-expect-fail stx)
+  (syntax-case stx ()
+    [(_ name property gen-list)
+     #'(test-property-expect-fail name property gen-list 100)]
+    [(_ name property gen-list runs)
+     #'(begin
+	 (test-property-expect-fail/unnamed property gen-list runs)
+	 (let* ([resp (test-result-alist (test-runner-current))]
+		[kind (assq 'result-kind resp)])
+	   (when (and (pair? kind) (eq? (cdr kind) 'fail))
+	     (display (format "PROPERTY XPASS ~a: ~a\n" name (quote property))
+		      (current-output-port)))))]))
+
+(define (gen-range min max) (make-random-integer-generator min max))
+
 (define-syntax run-all-base-tests
   (syntax-rules (exact)
     [(_ (exact exact?)
         *type-of*
         %min% %max% *mk-gen-relem*
         *from-args* *make* *from-list* *to-list*
- 	*length* *sub* *upd!*)
+ 	*length* *subscript* *update!*)
      (begin
-       #| Start by defining some helpers and generators |#
+       ;;;
        (define (~l str) (format str *type-of*))
-       (define (gen-range min max) (make-random-integer-generator min max))
        (define gen-min+max (and exact? (circular-generator %min% %max%)))
        (define gen-^min+max (and exact? (circular-generator (- %min% 1) (+ %max% 1))))
        (define mk-gen-rlist
@@ -63,13 +135,36 @@
            (gfilter (lambda (vec) (<= min-size (*length* vec) max-size))
                     (gmap *from-list* (list-generator-of (*mk-gen-relem*))))]))
 
+       (define-test-property/curried ((define-non-vector-property op) xs . args)
+         (apply op xs args)
+         (irritants xs) (message (format "~~a is not of type ~a" *type-of*)))
+       (define-test-property/curried ((define-sub+upd!/non-index-property op) v k . rest)
+         (apply op v k rest)
+         (irritants k) (message "index ~a is not a non-negative fixnum"))
+       (define-test-property/curried ((define-sub+upd!/bounds-property op) v k . rest)
+         (let ([ind (fx+ k (*length* v))])
+           (apply op v ind rest))
+         (irritants (fx+ k (*length* v)) v); reflects above body
+         (message "~a is not a valid index for ~a"))
+       (define-test-property/curried ((define-sub+upd!/neg-index-property op) v k . rest)
+         (apply op v k rest)
+         (irritants k v) (message "~a is not a valid index for ~a"))
+       ;;;
        (test-begin (~l"~a initialisation"))
        (define (from-largs args) (apply *from-args* args))
-       (define-init-property from-list-property *from-list*)
-       (define-init-property from-args-property from-largs)
-       (define-non-list-property from-list/non-list-property *from-list* *type-of* "list->" "")
-       (define-non-elem-property from-list/bad-elem-property *from-list* *type-of* "list->" "")
-       (define-non-elem-property from-args/bad-elem-property from-largs *type-of* "" "")
+       (define (make-init-property from-list)
+         (case-lambda
+          [(lst)       (from-list lst)]
+          [(lst extra) (from-list (cons extra lst))]))
+       (define from-list-property (make-init-property *from-list*))
+       (define from-args-property (make-init-property from-largs))
+       (define-test-property (non-list-property xs)
+         (*from-list* xs)
+         (raises *from-list*) (irritants xs) (message "~a is not a proper list"))
+       (define-test-property (non-elem-property xs k x)
+         (let-values ([(pre-vec post-vec) (split-at xs k)])
+           (*from-list* (append pre-vec (cons x post-vec))))
+         (raises *from-list*) (irritants x) (message (format-vector-type "element ~~a cannot be contained within ~a" *type-of*)))
        (test-property (~l"list->~a") from-list-property (list (mk-gen-rlist)))
        (test-property (~l"~a") from-args-property (list (mk-gen-rlist)))
        (when exact?
@@ -77,38 +172,59 @@
           (test-property (~l"~a (minimum/maximum)") from-args-property (list (mk-gen-rlist) gen-min+max))
           (test-property-expect-fail (~l"list->~a (1 - minimum, 1 + maximum)") from-list-property (list (mk-gen-rlist) gen-^min+max))
           (test-property-expect-fail (~l"~a (1 - minimum, 1 + maximum)") from-args-property (list (mk-gen-rlist) gen-^min+max)))
-       (test-property (~l"list->~a (non-list)") from-list/non-list-property (list (symbol-generator)))
-       (test-property (~l"list->~a (bad list element)") from-list/bad-elem-property (list (mk-gen-rlist 24) (gen-range 0 24) (symbol-generator)))
-       (test-property (~l"~a (bad list element)") from-args/bad-elem-property (list (mk-gen-rlist 24) (gen-range 0 24) (symbol-generator)))
-       (test-end)
-
+       (test-property (~l"list->~a (non-list)") non-list-property (list (symbol-generator)))
+       (test-property (~l"list->~a (bad list element)") non-elem-property (list (mk-gen-rlist 24) (gen-range 0 24) (symbol-generator)))
+       (test-property (~l"~a (bad list element)") non-elem-property (list (mk-gen-rlist 24) (gen-range 0 24) (symbol-generator)))
+       (test-end (~l"~a initialisation"))
+       ;;;
+       ;;;
        (test-begin (~l"~a make"))
-       (define-make-property make-property *make*)
-       (define-make/neg-width-property make-neg-width-property *make* *type-of* "make-" "")
-       (define-make/non-width-property make-non-width-property *make* *type-of* "make-" "")
-       (define-repeating-non-elem-property/1 make-non-elem-property *make* *type-of* "make-" "")
+       (define (make-property . args) (apply *make* args))
+       (define-test-property (make/neg-width-property width rep)
+         (*make* width rep)
+         (raises *make*) (irritants width) (message "length ~a is not a non-negative fixnum"))
+       (define-test-property (make/non-width-property width rep)
+         (*make* width rep)
+         (raises *make*) (irritants width) (message (format-vector-type "~~a is not a valid length for ~a" *type-of*)))
+       (define-test-property (make/non-elem-property pre rep)
+         (*make* pre rep)
+         (raises *make*) (irritants rep) (message (format-vector-type "repeating element ~~a cannot be contained within ~a" *type-of*)))
        (test-property (~l"make-~a (size + repeating element)") make-property (list (gen-range 0 65536) (*mk-gen-relem*)))
        (test-property (~l"make-~a (size, omit repeating element)") make-property (list (gen-range 0 65536)))
-       (test-property (~l"make-~a (negative size)") make-neg-width-property (list (gen-range -65536 0) (*mk-gen-relem*)))
-       (test-property (~l"make-~a (non-numeric size)") make-non-width-property (list (symbol-generator) (*mk-gen-relem*)))
-       (test-property (~l"make-~a (invalid repeating element)") make-non-elem-property (list (gen-range 0 65536) (symbol-generator)))
-       (test-end)
-
+       (test-property (~l"make-~a (negative size)") make/neg-width-property (list (gen-range -65536 0) (*mk-gen-relem*)))
+       (test-property (~l"make-~a (non-numeric size)") make/non-width-property (list (symbol-generator) (*mk-gen-relem*)))
+       (test-property (~l"make-~a (invalid repeating element)") make/non-elem-property (list (gen-range 0 65536) (symbol-generator)))
+       (test-end (~l"~a make"))
+       ;;;
+       ;;;
        (test-begin (~l"~a length"))
-       (define-length-property length-property *from-list* *length*)
-       (define-non-vector-property length/non-vec-property *length* *type-of* "" "-length")
+       (define (length-property lst) (fx=? (length lst) (*length* (*from-list* lst))))
+       (define-non-vector-property length/non-vec-property *length*)
        (test-property (~l"~a-length") length-property (list (list-generator-of (*mk-gen-relem*))))
        (test-property (~l"~a-length (invalid vector)") length/non-vec-property (list (list-generator-of (symbol-generator) 24)))
-       (test-end)
-
+       (test-end (~l"~a length"))
+       ;;;
+       ;;;
        (test-begin (~l"~a to list"))
-       (define-to-list-property           to-list-property *to-list* *length*)
-       (define-non-vector-property        to-list/non-vec-property *to-list* *type-of* "" "->list")
-       (define-to-list/neg-start-property to-list/neg-start-property *to-list* *type-of* "" "->list")
-       (define-to-list/neg-end-property   to-list/neg-end-property *to-list* *type-of* "" "->list")
-       (define-to-list/bounds-property    to-list/bounds-property *to-list* *type-of* "" "->list")
-       (define-to-list/overflow-property  to-list/overflow-property *to-list* *type-of* "" "->list")
-
+       (define to-list-property
+         (case-lambda
+          [(vec) (to-list-property vec 0 (*length* vec))]
+          [(vec start) (to-list-property vec start (*length* vec))]
+          [(vec start end) (fx=? (length (*to-list* vec start end))
+                                 (fx- end start))]))
+       (define-non-vector-property  to-list/non-vec-property *to-list*)
+       (define-test-property (to-list/neg-start-property vec start)
+         (*to-list* vec start)
+         (raises *to-list*) (irritants start) (message "start ~a is not a non-negative fixnum"))
+       (define-test-property (to-list/neg-end-property vec start end)
+         (*to-list* vec start end)
+         (raises *to-list*) (irritants end) (message "end ~a is not a non-negative fixnum"))
+       (define-test-property (to-list/bounds-property vec start end)
+         (*to-list* vec start end)
+         (raises *to-list*) (irritants end start) (message "end ~a must be greater than or equal to start ~a"))
+       (define-test-property (to-list/overflow-property vec start end)
+         (*to-list* vec start end)
+         (raises *to-list*) (irritants end vec) (message "end ~a overflows ~a"))
        (test-property (~l"~a->list (single vector argument)") to-list-property (list (mk-gen-rvec 24)))
        (when exact?
          #| There is some kind of bug in the property testing suite invoked in calling
@@ -117,43 +233,50 @@
             between this sort of issue and errors raised by the test. |#
          (test-property (~l"~a->list (vector and start arguments)") to-list-property (list (mk-gen-rvec 24) (gen-range 0 12)))
          (test-property (~l"~a->list (vector, start and end arguments)") to-list-property (list (mk-gen-rvec 24) (gen-range 0 12) (gen-range 12 24))))
-       (test-property (~l"~a->list (non-vector argument)") to-list/non-vec-property (list (symbol-generator)))
+       (test-property (~l"~a->list (non-~a argument)") to-list/non-vec-property (list (symbol-generator)))
        (test-property (~l"~a->list (negative start)") to-list/neg-start-property (list (mk-gen-rvec 24) (gen-range -2048 0)))
        (test-property (~l"~a->list (negative end)") to-list/neg-end-property (list (mk-gen-rvec 24) (gen-range 0 24) (gen-range -2048 0)))
        (test-property (~l"~a->list (flipped start/end)") to-list/bounds-property (list (mk-gen-rvec 48) (gen-range 24 48) (gen-range 0 24)))
        (test-property (~l"~a->list (end overflows)") to-list/overflow-property (list (mk-gen-rvec 0 24) (gen-range 0 24) (gen-range 25 48)))
-       (test-end)
-
+       (test-end (~l"~a to list"))
+       ;;;
+       ;;;
        (test-begin (~l"~a subscript"))
-       (define-sub-property sub-property *sub* *length*)
-       (define-non-vector-property sub/non-vec-property *sub* *type-of* "" "-ref")
-       (define-sub+upd!/non-index-property sub/non-index-property *sub*  *type-of* "" "-ref")
-       (define-sub+upd!/bounds-property sub/bounds-property *sub* *length* *type-of* "" "-ref")
-       (define-sub+upd!/neg-index-property sub/neg-index-property *sub* *type-of* "" "-ref")
+       (define (sub-property v) (*subscript* v (random (*length* v))))
+       (define-non-vector-property sub/non-vec-property *subscript*)
+       (define-sub+upd!/non-index-property sub/non-index-property *subscript*)
+       (define-sub+upd!/bounds-property sub/bounds-property *subscript*)
+       (define-sub+upd!/neg-index-property sub/neg-index-property *subscript*)
        (test-property (~l"~a-ref") sub-property (list (mk-gen-rvec 1)))
        (test-property (~l"~a-ref (non argument)") sub/non-vec-property (list (list-generator-of (*mk-gen-relem*) 24) (gen-range 0 24)))
        (test-property (~l"~a-ref (non-numeric index)") sub/non-index-property (list (mk-gen-rvec 1) (symbol-generator)))
        (test-property (~l"~a-ref (index overflows)") sub/bounds-property (list (mk-gen-rvec 1) (gen-range 0 24)))
        (test-property (~l"~a-ref (negative index)") sub/neg-index-property (list (mk-gen-rvec 24) (gen-range -2048 0)))
-       (test-end)
-
-       (test-begin (~l"~a in-place update"))
-       (define-upd!-property upd!-property *upd!*)
-       (define-upd!/non-elem-property upd!/non-elem-property *upd!* *type-of* "" "-set!")
-       (define-upd!/non-elem-range-property upd!/non-elem-range-property *upd!* *type-of* "" "-set!")
-       (define-non-vector-property upd!/non-vec-property *upd!* *type-of* "" "-set!")
-       (define-sub+upd!/non-index-property upd!/non-index-property *upd!* *type-of* "" "-set!")
-       (define-sub+upd!/bounds-property upd!/bounds-property *upd!* *length* *type-of* "" "-set!")
-       (define-sub+upd!/neg-index-property upd!/neg-index-property *upd!* *type-of* "" "-set!")
+       (test-end (~l"~a subscript"))
+       ;;;
+       ;;;
+       (test-begin (~l"~a update!"))
+       (define (upd!-property v k x) (*update!* v k x))
+       (define-non-vector-property upd!/non-vec-property *update!*)
+       (define-sub+upd!/non-index-property upd!/non-index-property *update!*)
+       (define-sub+upd!/bounds-property upd!/bounds-property *update!*)
+       (define-sub+upd!/neg-index-property upd!/neg-index-property *update!*)
+       (define-test-property (upd!/non-elem-property v k x)
+         (*update!* v k x)
+         (raises *update!*) (irritants x) (message (format-vector-type "element ~~a cannot be contained within ~a" *type-of*)))
+       (define-test-property (upd!/non-elem-range-property v k x)
+         (*update!* v k x)
+         (raises *update!*) (irritants x) (message (format-vector-type "element ~~a is out of range for ~a" *type-of*)))
        (test-property (~l"~a-set!") upd!-property (list (mk-gen-rvec 24) (gen-range 0 24) (*mk-gen-relem*)))
-       (test-property (~l"~a-set! (non-vector argument)") upd!/non-vec-property (list (mk-gen-rlist 24) (gen-range 0 24) (*mk-gen-relem*)))
+       (test-property (~l"~a-set! (non ~a argument)") upd!/non-vec-property (list (mk-gen-rlist 24) (gen-range 0 24) (*mk-gen-relem*)))
        (test-property (~l"~a-set! (non-numeric index)") upd!/non-index-property (list (mk-gen-rvec 1) (symbol-generator) (*mk-gen-relem*)))
        (test-property (~l"~a-set! (index overflows)") upd!/bounds-property (list (mk-gen-rvec 1) (gen-range 0 24) (*mk-gen-relem*)))
        (test-property (~l"~a-set! (negative index)") upd!/neg-index-property (list (mk-gen-rvec 24) (gen-range -2048 0) (*mk-gen-relem*)))
        (test-property (~l"~a-set! (non-numeric element)") upd!/non-elem-property (list (mk-gen-rvec 24) (gen-range 0 24) (symbol-generator)))
        (when exact?
          (test-property (~l"~a-set! (element out of range)") upd!/non-elem-range-property (list (mk-gen-rvec 24) (gen-range 0 24) gen-^min+max)))
-       (test-end))]))
+       (test-end (~l"~a update!"))
+       )]))
 
 #| BEGIN THE TESTING! |#
 
