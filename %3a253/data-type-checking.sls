@@ -28,7 +28,7 @@
           lambda-checked define-checked
           case-lambda-checked
           define-record-type-checked)
-  (import (scheme))
+  (import (rnrs))
 
   (define-syntax assume
     (syntax-rules ()
